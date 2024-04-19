@@ -5,6 +5,12 @@ terraform {
       version = "~> 5.0"
     }
   }
+  # for stage management to store terraform.tfstate create one s3 bucket on aws
+  backend "s3" {
+    bucket = "terraform-stage-123"
+    key    = "terraform_state_file"
+    region = "ap-south-1"
+  }
 }
 
 # Configure the AWS Provider
@@ -244,10 +250,6 @@ resource "aws_launch_template" "demo_LT" {
   key_name = aws_key_pair.demo_key_pair_1.id
   vpc_security_group_ids = [aws_security_group.allow_ssh.id]
 
-  network_interfaces {
-    associate_public_ip_address = true
-  }
-
   tag_specifications {
     resource_type = "instance"
 
@@ -256,4 +258,52 @@ resource "aws_launch_template" "demo_LT" {
     }
   }
   user_data = filebase64("userdata.sh")
+}
+
+# create ASG 
+resource "aws_autoscaling_group" "demo_ASG" {
+  name = "demo-ASG"
+  vpc_zone_identifier = [ aws_subnet.public_subnet_1a.id, aws_subnet.public_subnet_1c.id ]
+  desired_capacity   = 2
+  max_size           = 5
+  min_size           = 2
+  target_group_arns = [ aws_lb_target_group.demo_TG_2.arn ]
+  
+  launch_template {
+    id      = aws_launch_template.demo_LT.id
+    version = "$Latest"
+  }
+}
+
+# create ALB with ASG
+resource "aws_lb" "apache_LB_2" {
+  name               = "apache-LB-2"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.allow_ssh.id]
+  subnets            = [aws_subnet.public_subnet_1a.id, aws_subnet.public_subnet_1c.id]
+
+  tags = {
+    Environment = "production"
+  }
+}
+
+# create lisener with ASG
+resource "aws_lb_listener" "lb_lisener_2" {
+  load_balancer_arn = aws_lb.apache_LB_2.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.demo_TG_2.arn
+  }
+}
+
+# create target group
+resource "aws_lb_target_group" "demo_TG_2" {
+  name     = "tg-apache2"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.terraform_vpc.id
 }
